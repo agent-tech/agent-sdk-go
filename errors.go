@@ -12,3 +12,11 @@ type APIError struct {
 func (e *APIError) Error() string {
 	return fmt.Sprintf("api error %d: %s", e.StatusCode, e.Message)
 }
+
+// ValidationError is returned when the SDK rejects a request before
+// it reaches the API (e.g. nil request, empty intent ID).
+type ValidationError struct {
+	Message string
+}
+
+func (e *ValidationError) Error() string { return "validation: " + e.Message }

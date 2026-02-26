@@ -4,6 +4,12 @@
 //
 //	PAY_BASE_URL=https://api-pay.agent.tech/api PAY_CLIENT_ID=id PAY_CLIENT_SECRET=secret go run ./cmd/example
 //
+// To use header-based auth instead:
+//
+//	PAY_BASE_URL=... PAY_CLIENT_ID=... PAY_API_KEY=key go run ./cmd/example
+//
+// Set PAY_EMAIL to override the default merchant email (merchant@example.com).
+//
 // To only query an existing intent:
 //
 //	PAY_BASE_URL=... PAY_CLIENT_ID=... PAY_CLIENT_SECRET=... PAY_INTENT_ID=uuid go run ./cmd/example
@@ -12,7 +18,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -20,46 +25,69 @@ import (
 	"github.com/agent-tech/agent-sdk-go"
 )
 
+func fatal(msg string, err error) {
+	fmt.Fprintf(os.Stderr, "%s: %v\n", msg, err)
+	os.Exit(1)
+}
+
+func printJSON(v any) {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	fmt.Println(string(b))
+}
+
 func main() {
 	baseURL := os.Getenv("PAY_BASE_URL")
 	clientID := os.Getenv("PAY_CLIENT_ID")
 	clientSecret := os.Getenv("PAY_CLIENT_SECRET")
+	apiKey := os.Getenv("PAY_API_KEY")
 	intentID := os.Getenv("PAY_INTENT_ID")
 
-	if baseURL == "" || clientID == "" || clientSecret == "" {
-		fmt.Fprintln(os.Stderr, "Set PAY_BASE_URL, PAY_CLIENT_ID, PAY_CLIENT_SECRET (and optionally PAY_INTENT_ID).")
+	if baseURL == "" || clientID == "" {
+		fmt.Fprintln(os.Stderr, "Set PAY_BASE_URL, PAY_CLIENT_ID, and one of PAY_CLIENT_SECRET or PAY_API_KEY.")
 		os.Exit(1)
 	}
 
-	client := pay.NewClient(baseURL, clientID, clientSecret)
+	// Choose auth mode based on which env var is set.
+	var auth pay.Option
+	switch {
+	case apiKey != "":
+		auth = pay.WithAPIKeyAuth(clientID, apiKey)
+	case clientSecret != "":
+		auth = pay.WithBearerAuth(clientID, clientSecret)
+	default:
+		fmt.Fprintln(os.Stderr, "Provide PAY_CLIENT_SECRET or PAY_API_KEY.")
+		os.Exit(1)
+	}
+
+	client, err := pay.NewClient(baseURL, auth)
+	if err != nil {
+		fatal("NewClient", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if intentID != "" {
-		intent, err := client.Intent(ctx, intentID)
+		intent, err := client.GetIntent(ctx, intentID)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Intent: %v\n", err)
-			os.Exit(1)
+			fatal("GetIntent", err)
 		}
-		b, _ := json.MarshalIndent(intent, "", "  ")
-		fmt.Println(string(b))
+		printJSON(intent)
 		return
 	}
 
+	email := os.Getenv("PAY_EMAIL")
+	if email == "" {
+		email = "merchant@example.com"
+	}
 	req := &pay.CreateIntentRequest{
-		Email:      "merchant@example.com",
+		Email:      email,
 		Amount:     "10.00",
 		PayerChain: "solana",
 	}
 	resp, err := client.CreateIntent(ctx, req)
 	if err != nil {
-		var apiErr *pay.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode != 0 {
-			fmt.Fprintf(os.Stderr, "CreateIntent API error %d: %s\n", apiErr.StatusCode, apiErr.Message)
-		} else {
-			fmt.Fprintf(os.Stderr, "CreateIntent: %v\n", err)
-		}
-		os.Exit(1)
+		fatal("CreateIntent", err)
 	}
 
 	fmt.Printf("Intent created: %s\n", resp.IntentID)
@@ -67,16 +95,9 @@ func main() {
 
 	exec, err := client.ExecuteIntent(ctx, resp.IntentID)
 	if err != nil {
-		var apiErr *pay.APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode != 0 {
-			fmt.Fprintf(os.Stderr, "ExecuteIntent API error %d: %s\n", apiErr.StatusCode, apiErr.Message)
-		} else {
-			fmt.Fprintf(os.Stderr, "ExecuteIntent: %v\n", err)
-		}
-		os.Exit(1)
+		fatal("ExecuteIntent", err)
 	}
 
 	fmt.Printf("Execute result status: %s\n", exec.Status)
-	b, _ := json.MarshalIndent(exec, "", "  ")
-	fmt.Println(string(b))
+	printJSON(exec)
 }

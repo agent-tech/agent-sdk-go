@@ -3,7 +3,6 @@ package pay
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,75 +17,64 @@ const (
 	_defaultTimeout = 30 * time.Second
 )
 
-// Client calls the v2 payment API with API Key authentication.
+// Client calls the v2 payment API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	authHeader string
-	useHeaders bool
-	clientID   string
-	apiKey     string
+	baseURL         string
+	httpClient      *http.Client
+	authFunc        func(*http.Request)
+	hasCustomClient bool   // set by WithHTTPClient
+	optErr          error  // first error from an option
 }
 
-// NewClient builds a client using Bearer auth (Base64 of clientID:clientSecret).
-// baseURL is the API root without /v2 (e.g. https://api-pay.agent.tech/api); requests use {baseURL}/v2/...
-func NewClient(baseURL, clientID, clientSecret string) *Client {
-	token := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
-	return &Client{
+// NewClient creates a Client for the given baseURL (the API root without /v2).
+// At least one auth option (WithBearerAuth or WithAPIKeyAuth) must be provided.
+func NewClient(baseURL string, opts ...Option) (*Client, error) {
+	if baseURL == "" {
+		return nil, &ValidationError{Message: "baseURL is required"}
+	}
+	c := &Client{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		httpClient: &http.Client{Timeout: _defaultTimeout},
-		authHeader: "Bearer " + token,
 	}
-}
-
-// NewClientWithAPIKey builds a client using X-Client-ID and X-API-Key headers.
-// baseURL is the API root without /v2 (e.g. https://api-pay.agent.tech/api); requests use {baseURL}/v2/...
-func NewClientWithAPIKey(baseURL, clientID, apiKey string) *Client {
-	return &Client{
-		baseURL:    strings.TrimSuffix(baseURL, "/"),
-		httpClient: &http.Client{Timeout: _defaultTimeout},
-		useHeaders: true,
-		clientID:   clientID,
-		apiKey:     apiKey,
+	for _, opt := range opts {
+		opt(c)
 	}
-}
-
-// SetHTTPClient replaces the default HTTP client (e.g. for custom timeouts or transport).
-func (c *Client) SetHTTPClient(hc *http.Client) {
-	if hc != nil {
-		c.httpClient = hc
+	if c.optErr != nil {
+		return nil, c.optErr
 	}
-}
-
-func (c *Client) setAuth(req *http.Request) {
-	if c.useHeaders {
-		req.Header.Set("X-Client-ID", c.clientID)
-		req.Header.Set("X-API-Key", c.apiKey)
-	} else {
-		req.Header.Set("Authorization", c.authHeader)
+	if c.authFunc == nil {
+		return nil, &ValidationError{Message: "an auth option is required (use WithBearerAuth or WithAPIKeyAuth)"}
 	}
+	return c, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	u := c.baseURL + _v2PathPrefix + path
-	req, err := http.NewRequestWithContext(ctx, method, u, nil)
+
+	var reqBody io.Reader
+	if body != nil {
+		reqBody = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, u, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		req.ContentLength = int64(len(body))
 	}
-	c.setAuth(req)
+	c.authFunc(req)
 	return c.httpClient.Do(req)
 }
 
 func (c *Client) parseError(resp *http.Response) error {
 	var er ErrorResponse
+	// Best-effort decode; fall back to resp.Status if body is not JSON.
 	_ = json.NewDecoder(resp.Body).Decode(&er)
-	resp.Body.Close()
 	msg := er.Message
+	if msg == "" {
+		msg = er.Error
+	}
 	if msg == "" {
 		msg = resp.Status
 	}
@@ -97,7 +85,7 @@ func (c *Client) parseError(resp *http.Response) error {
 // Exactly one of req.Email or req.Recipient must be set.
 func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*CreateIntentResponse, error) {
 	if req == nil {
-		return nil, &APIError{StatusCode: 0, Message: "CreateIntentRequest is nil"}
+		return nil, &ValidationError{Message: "CreateIntentRequest is nil"}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -120,9 +108,9 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 
 // ExecuteIntent triggers transfer on Base using the Agent wallet (POST /v2/intents/{intent_id}/execute).
 // No body or settle_proof required; backend signs and transfers USDC to the intent recipient.
-func (c *Client) ExecuteIntent(ctx context.Context, intentID string) (*ExecuteResponse, error) {
+func (c *Client) ExecuteIntent(ctx context.Context, intentID string) (*ExecuteIntentResponse, error) {
 	if intentID == "" {
-		return nil, &APIError{StatusCode: 0, Message: "intent_id is required"}
+		return nil, &ValidationError{Message: "intent_id is required"}
 	}
 	resp, err := c.do(ctx, http.MethodPost, "/intents/"+url.PathEscape(intentID)+"/execute", nil)
 	if err != nil {
@@ -132,17 +120,17 @@ func (c *Client) ExecuteIntent(ctx context.Context, intentID string) (*ExecuteRe
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.parseError(resp)
 	}
-	var out ExecuteResponse
+	var out ExecuteIntentResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &out, nil
 }
 
-// Intent returns intent status and receipt (GET /v2/intents?intent_id=...).
-func (c *Client) Intent(ctx context.Context, intentID string) (*GetIntentResponse, error) {
+// GetIntent returns intent status and receipt (GET /v2/intents?intent_id=...).
+func (c *Client) GetIntent(ctx context.Context, intentID string) (*GetIntentResponse, error) {
 	if intentID == "" {
-		return nil, &APIError{StatusCode: 0, Message: "intent_id is required"}
+		return nil, &ValidationError{Message: "intent_id is required"}
 	}
 	path := "/intents?intent_id=" + url.QueryEscape(intentID)
 	resp, err := c.do(ctx, http.MethodGet, path, nil)

@@ -40,11 +40,13 @@ import (
 )
 
 func main() {
-    client := pay.NewClient(
+    client, err := pay.NewClient(
         "https://api-pay.agent.tech/api",
-        "your-client-id",
-        "your-client-secret",
+        pay.WithBearerAuth("your-client-id", "your-client-secret"),
     )
+    if err != nil {
+        log.Fatal(err)
+    }
     ctx := context.Background()
 
     // 1. Create intent
@@ -66,7 +68,7 @@ func main() {
     log.Printf("Status: %s", exec.Status)
 
     // 3. Query full receipt
-    intent, err := client.Intent(ctx, resp.IntentID)
+    intent, err := client.GetIntent(ctx, resp.IntentID)
     if err != nil {
         log.Fatal(err)
     }
@@ -95,7 +97,7 @@ Set `PAY_INTENT_ID` to skip creation and query an existing intent instead.
 Base64-encodes `clientID:clientSecret` and sends it as `Authorization: Bearer <token>`.
 
 ```go
-client := pay.NewClient("https://api-pay.agent.tech/api", "your-client-id", "your-client-secret")
+client, err := pay.NewClient(baseURL, pay.WithBearerAuth("client-id", "client-secret"))
 ```
 
 ### Header-based API key
@@ -103,18 +105,30 @@ client := pay.NewClient("https://api-pay.agent.tech/api", "your-client-id", "you
 Sends `X-Client-ID` and `X-API-Key` headers.
 
 ```go
-client := pay.NewClientWithAPIKey("https://api-pay.agent.tech/api", "your-client-id", "your-api-key")
+client, err := pay.NewClient(baseURL, pay.WithAPIKeyAuth("client-id", "api-key"))
 ```
 
 ### Custom HTTP client
 
-The default HTTP client uses a **30-second timeout**. Override it with `SetHTTPClient`:
+The default HTTP client uses a **30-second timeout**. Override with options:
 
 ```go
-client.SetHTTPClient(&http.Client{
-    Timeout:   60 * time.Second,
-    Transport: customTransport,
-})
+client, err := pay.NewClient(baseURL,
+    pay.WithBearerAuth("id", "secret"),
+    pay.WithHTTPClient(&http.Client{
+        Timeout:   60 * time.Second,
+        Transport: customTransport,
+    }),
+)
+```
+
+Or just change the timeout:
+
+```go
+client, err := pay.NewClient(baseURL,
+    pay.WithBearerAuth("id", "secret"),
+    pay.WithTimeout(60 * time.Second),
+)
 ```
 
 ## API Methods
@@ -123,7 +137,7 @@ client.SetHTTPClient(&http.Client{
 |---|---|---|
 | `CreateIntent` | `POST /v2/intents` | Create a payment intent |
 | `ExecuteIntent` | `POST /v2/intents/{id}/execute` | Execute transfer on Base with Agent wallet |
-| `Intent` | `GET /v2/intents?intent_id=...` | Get intent status and receipt |
+| `GetIntent` | `GET /v2/intents?intent_id=...` | Get intent status and receipt |
 
 ### CreateIntent
 
@@ -153,14 +167,14 @@ exec, err := client.ExecuteIntent(ctx, resp.IntentID)
 // exec.Status is typically "BASE_SETTLED"
 ```
 
-### Intent (query status)
+### GetIntent (query status)
 
 ```go
-intent, err := client.Intent(ctx, intentID)
+intent, err := client.GetIntent(ctx, intentID)
 switch intent.Status {
-case "BASE_SETTLED":
+case pay.StatusBaseSettled:
     // use intent.BasePayment for receipt
-case "EXPIRED", "VERIFICATION_FAILED":
+case pay.StatusExpired, pay.StatusVerificationFailed:
     // terminal failure
 default:
     // still processing — poll again
@@ -199,15 +213,17 @@ Intents expire **10 minutes** after creation.
                         └──────────────┘
 ```
 
-| Status | Description |
-|---|---|
-| `AWAITING_PAYMENT` | Intent created, waiting for execution |
-| `PENDING` | Execution initiated, processing |
-| `VERIFICATION_FAILED` | Source payment verification failed (terminal) |
-| `SOURCE_SETTLED` | Source chain payment confirmed |
-| `BASE_SETTLING` | USDC transfer on Base in progress |
-| `BASE_SETTLED` | Transfer complete — check `base_payment` for receipt (terminal) |
-| `EXPIRED` | Intent was not executed within 10 minutes (terminal) |
+Use the status constants instead of bare strings:
+
+| Constant | Value | Description |
+|---|---|---|
+| `pay.StatusAwaitingPayment` | `AWAITING_PAYMENT` | Intent created, waiting for execution |
+| `pay.StatusPending` | `PENDING` | Execution initiated, processing |
+| `pay.StatusVerificationFailed` | `VERIFICATION_FAILED` | Source payment verification failed (terminal) |
+| `pay.StatusSourceSettled` | `SOURCE_SETTLED` | Source chain payment confirmed |
+| `pay.StatusBaseSettling` | `BASE_SETTLING` | USDC transfer on Base in progress |
+| `pay.StatusBaseSettled` | `BASE_SETTLED` | Transfer complete — check `base_payment` for receipt (terminal) |
+| `pay.StatusExpired` | `EXPIRED` | Intent was not executed within 10 minutes (terminal) |
 
 ## Supported Chains
 
@@ -221,7 +237,7 @@ All payments settle on **Base** regardless of the source chain. The `payer_chain
 
 ## Fee Breakdown
 
-The `FeeBreakdown` struct is returned in `CreateIntentResponse`, `ExecuteResponse`, and `GetIntentResponse`:
+The `FeeBreakdown` struct is returned in all intent response types (embedded via `IntentBase`):
 
 | Field | JSON | Description |
 |---|---|---|
@@ -240,12 +256,23 @@ The `FeeBreakdown` struct is returned in `CreateIntentResponse`, `ExecuteRespons
 
 ## Error Handling
 
-All non-2xx responses are returned as `*pay.APIError`. Use `errors.As` to extract:
+The SDK uses two error types:
+
+**`APIError`** — returned for non-2xx HTTP responses from the API:
 
 ```go
 var apiErr *pay.APIError
 if errors.As(err, &apiErr) {
     log.Printf("HTTP %d: %s", apiErr.StatusCode, apiErr.Message)
+}
+```
+
+**`ValidationError`** — returned when the SDK rejects a request before it reaches the API (e.g. nil request, empty intent ID):
+
+```go
+var valErr *pay.ValidationError
+if errors.As(err, &valErr) {
+    log.Printf("Invalid input: %s", valErr.Message)
 }
 ```
 
@@ -263,11 +290,13 @@ if errors.As(err, &apiErr) {
 ### Custom HTTP client with retry
 
 ```go
-client := pay.NewClient(baseURL, clientID, clientSecret)
-client.SetHTTPClient(&http.Client{
-    Timeout:   60 * time.Second,
-    Transport: &retryTransport{base: http.DefaultTransport},
-})
+client, err := pay.NewClient(baseURL,
+    pay.WithBearerAuth(clientID, clientSecret),
+    pay.WithHTTPClient(&http.Client{
+        Timeout:   60 * time.Second,
+        Transport: &retryTransport{base: http.DefaultTransport},
+    }),
+)
 ```
 
 ### Rate limiting
