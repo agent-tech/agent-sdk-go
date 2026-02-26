@@ -70,6 +70,10 @@ type ExecuteIntentResponse struct {
 	IntentBase
 }
 
+// SubmitProofResponse is the response for POST /api/intents/{intent_id} (200).
+// Same structure as ExecuteIntentResponse; returned when settle_proof is submitted.
+type SubmitProofResponse = ExecuteIntentResponse
+
 // SourcePayment holds source-chain payment details from GetIntent.
 type SourcePayment struct {
 	Chain       string `json:"chain"`

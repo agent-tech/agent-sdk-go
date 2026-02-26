@@ -3,16 +3,19 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/agent-tech/agent-sdk-go.svg)](https://pkg.go.dev/github.com/agent-tech/agent-sdk-go)
 ![Go Version](https://img.shields.io/badge/go-%3E%3D1.21-blue)
 
-Go client for the Agent Tech v2 payment API — create intents, execute USDC transfers on Base, and query status. No wallet or signing on your side.
+Go client for the Agent Tech payment API — create intents, execute USDC transfers on Base, and query status.
 
+- **One SDK, two clients** — shared types (`CreateIntentRequest`, `CreateIntentResponse`, `GetIntentResponse`) with two flows:
+  - **`Client`** — v2 API Key flow: create intent → execute (backend signs with Agent wallet). No wallet needed.
+  - **`PublicClient`** — public API flow: create intent → payer signs X402 & pays → submit settle_proof.
 - **Zero dependencies** beyond the Go standard library
-- **Two auth modes** — Bearer token or header-based API key
-- **All payments settle on Base** chain via the backend Agent wallet
+- **All payments settle on Base** chain
 
 ## Table of Contents
 
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [Client vs PublicClient](#client-vs-publicclient)
 - [Authentication](#authentication)
 - [API Methods](#api-methods)
 - [Intent Lifecycle](#intent-lifecycle)
@@ -90,7 +93,37 @@ go run ./cmd/example
 
 Set `PAY_INTENT_ID` to skip creation and query an existing intent instead.
 
+## Client vs PublicClient
+
+| | `Client` (v2 API Key) | `PublicClient` (public API) |
+|---|---|---|
+| **Path** | `/v2` | `/api` |
+| **Auth** | API Key (required) | None |
+| **Flow** | CreateIntent → ExecuteIntent → GetIntent | CreateIntent → (payer pays) → SubmitProof → GetIntent |
+| **Use when** | Integrator has no wallet; backend Agent signs | Integrator has payer's wallet; can sign X402 and submit settle_proof |
+
+**Shared types**: `CreateIntentRequest`, `CreateIntentResponse`, `GetIntentResponse`, `FeeBreakdown`, `PaymentRequirements` — use the same structs for both clients.
+
+### PublicClient quick start
+
+```go
+client, err := pay.NewPublicClient("https://api-pay.agent.tech")
+if err != nil {
+    log.Fatal(err)
+}
+resp, err := client.CreateIntent(ctx, &pay.CreateIntentRequest{
+    Email:      "merchant@example.com",
+    Amount:     "100.50",
+    PayerChain: "solana",
+})
+// Use resp.PaymentRequirements for payer to sign X402...
+// After payment, submit the settle_proof:
+proof, err := client.SubmitProof(ctx, resp.IntentID, settleProof)
+```
+
 ## Authentication
+
+Auth applies only to **`Client`** (v2 API Key). **`PublicClient`** requires no authentication.
 
 ### Bearer token (recommended)
 
@@ -131,13 +164,31 @@ client, err := pay.NewClient(baseURL,
 )
 ```
 
+**PublicClient** supports `WithPublicHTTPClient` and `WithPublicTimeout`:
+
+```go
+client, err := pay.NewPublicClient(baseURL,
+    pay.WithPublicTimeout(60 * time.Second),
+)
+```
+
 ## API Methods
+
+**Client (v2):**
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `CreateIntent` | `POST /v2/intents` | Create a payment intent |
 | `ExecuteIntent` | `POST /v2/intents/{id}/execute` | Execute transfer on Base with Agent wallet |
 | `GetIntent` | `GET /v2/intents?intent_id=...` | Get intent status and receipt |
+
+**PublicClient (/api):**
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `CreateIntent` | `POST /api/intents` | Create a payment intent |
+| `SubmitProof` | `POST /api/intents/{id}` | Submit settle_proof after payer completes X402 payment |
+| `GetIntent` | `GET /api/intents?intent_id=...` | Get intent status and receipt |
 
 ### CreateIntent
 
@@ -230,9 +281,9 @@ Use the status constants instead of bare strings:
 | Chain | Identifier | Role |
 |---|---|---|
 | base | `base` | Payer chain (source) |
+| solana | `solana` | Payer chain (source, public API only) |
 
-
-All payments settle on **Base** regardless of the source chain. The `payer_chain` field in `CreateIntentRequest` specifies the source chain only.
+All payments settle on **Base** regardless of the source chain. The `payer_chain` field in `CreateIntentRequest` specifies the source chain. **PublicClient** supports `solana` and `base`; **Client** (v2) typically uses `base`.
 
 ## Fee Breakdown
 

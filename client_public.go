@@ -12,45 +12,56 @@ import (
 	"time"
 )
 
-const (
-	_apiPathPrefix  = "/api"
-	_v2PathPrefix   = "/v2"
-	_defaultTimeout = 30 * time.Second
-)
-
-// Client calls the v2 payment API.
-type Client struct {
+// PublicClient calls the public payment API (no auth, /api prefix).
+// Use when the integrator has the payer's wallet and can sign X402 / submit settle_proof.
+type PublicClient struct {
 	baseURL         string
 	httpClient      *http.Client
-	authFunc        func(*http.Request)
-	hasCustomClient bool   // set by WithHTTPClient
-	optErr          error  // first error from an option
+	hasCustomClient bool
 }
 
-// NewClient creates a Client for the given baseURL (the API root without /v2).
-// At least one auth option (WithBearerAuth or WithAPIKeyAuth) must be provided.
-func NewClient(baseURL string, opts ...Option) (*Client, error) {
+// PublicOption configures a PublicClient.
+type PublicOption func(*PublicClient)
+
+// NewPublicClient creates a PublicClient for the given baseURL (API root without /api).
+// No authentication is required.
+func NewPublicClient(baseURL string, opts ...PublicOption) (*PublicClient, error) {
 	if baseURL == "" {
 		return nil, &ValidationError{Message: "baseURL is required"}
 	}
-	c := &Client{
+	c := &PublicClient{
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
 		httpClient: &http.Client{Timeout: _defaultTimeout},
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
-	if c.optErr != nil {
-		return nil, c.optErr
-	}
-	if c.authFunc == nil {
-		return nil, &ValidationError{Message: "an auth option is required (use WithBearerAuth or WithAPIKeyAuth)"}
-	}
 	return c, nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
-	u := c.baseURL + _v2PathPrefix + path
+// WithPublicHTTPClient replaces the default HTTP client.
+// When set, WithPublicTimeout has no effect regardless of option ordering.
+func WithPublicHTTPClient(hc *http.Client) PublicOption {
+	return func(c *PublicClient) {
+		if hc != nil {
+			c.httpClient = hc
+			c.hasCustomClient = true
+		}
+	}
+}
+
+// WithPublicTimeout sets the timeout on the default HTTP client.
+// Ignored if WithPublicHTTPClient is also provided.
+func WithPublicTimeout(d time.Duration) PublicOption {
+	return func(c *PublicClient) {
+		if !c.hasCustomClient {
+			c.httpClient.Timeout = d
+		}
+	}
+}
+
+func (c *PublicClient) do(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	u := c.baseURL + _apiPathPrefix + path
 
 	var reqBody io.Reader
 	if body != nil {
@@ -64,27 +75,12 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	c.authFunc(req)
 	return c.httpClient.Do(req)
 }
 
-// parseAPIError decodes error response body; used by both Client and PublicClient.
-func parseAPIError(resp *http.Response) error {
-	var er ErrorResponse
-	_ = json.NewDecoder(resp.Body).Decode(&er)
-	msg := er.Message
-	if msg == "" {
-		msg = er.Error
-	}
-	if msg == "" {
-		msg = resp.Status
-	}
-	return &APIError{StatusCode: resp.StatusCode, Message: msg}
-}
-
-// CreateIntent creates a payment intent (POST /v2/intents).
+// CreateIntent creates a payment intent (POST /api/intents).
 // Exactly one of req.Email or req.Recipient must be set.
-func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*CreateIntentResponse, error) {
+func (c *PublicClient) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*CreateIntentResponse, error) {
 	if req == nil {
 		return nil, &ValidationError{Message: "CreateIntentRequest is nil"}
 	}
@@ -107,13 +103,20 @@ func (c *Client) CreateIntent(ctx context.Context, req *CreateIntentRequest) (*C
 	return &out, nil
 }
 
-// ExecuteIntent triggers transfer on Base using the Agent wallet (POST /v2/intents/{intent_id}/execute).
-// No body or settle_proof required; backend signs and transfers USDC to the intent recipient.
-func (c *Client) ExecuteIntent(ctx context.Context, intentID string) (*ExecuteIntentResponse, error) {
+// SubmitProof submits settle_proof after the payer has completed X402 payment on the source chain (POST /api/intents/{intent_id}).
+func (c *PublicClient) SubmitProof(ctx context.Context, intentID, settleProof string) (*SubmitProofResponse, error) {
 	if intentID == "" {
 		return nil, &ValidationError{Message: "intent_id is required"}
 	}
-	resp, err := c.do(ctx, http.MethodPost, "/intents/"+url.PathEscape(intentID)+"/execute", nil)
+	if settleProof == "" {
+		return nil, &ValidationError{Message: "settle_proof is required"}
+	}
+	body, err := json.Marshal(map[string]string{"settle_proof": settleProof})
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	path := "/intents/" + url.PathEscape(intentID)
+	resp, err := c.do(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -121,15 +124,15 @@ func (c *Client) ExecuteIntent(ctx context.Context, intentID string) (*ExecuteIn
 	if resp.StatusCode != http.StatusOK {
 		return nil, parseAPIError(resp)
 	}
-	var out ExecuteIntentResponse
+	var out SubmitProofResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &out, nil
 }
 
-// GetIntent returns intent status and receipt (GET /v2/intents?intent_id=...).
-func (c *Client) GetIntent(ctx context.Context, intentID string) (*GetIntentResponse, error) {
+// GetIntent returns intent status and receipt (GET /api/intents?intent_id=...).
+func (c *PublicClient) GetIntent(ctx context.Context, intentID string) (*GetIntentResponse, error) {
 	if intentID == "" {
 		return nil, &ValidationError{Message: "intent_id is required"}
 	}

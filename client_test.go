@@ -83,7 +83,7 @@ func TestWithTimeout_IgnoredBeforeCustomClient(t *testing.T) {
 	custom := &http.Client{Timeout: 90 * time.Second}
 	c, err := NewClient("http://localhost",
 		WithBearerAuth("id", "secret"),
-		WithTimeout(5*time.Second),  // applied to default, then replaced
+		WithTimeout(5*time.Second), // applied to default, then replaced
 		WithHTTPClient(custom),
 	)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestCreateIntent_Success(t *testing.T) {
 	resp, err := c.CreateIntent(context.Background(), &CreateIntentRequest{
 		Email:      "test@example.com",
 		Amount:     "10.00",
-		PayerChain: "solana",
+		PayerChain: "base",
 	})
 	if err != nil {
 		t.Fatal(err)
