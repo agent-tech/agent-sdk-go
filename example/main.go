@@ -4,13 +4,13 @@
 // use pay.NewPublicClient and see README.
 // Run from repo root:
 //
-//	PAY_BASE_URL=https://api-pay.agent.tech PAY_CLIENT_ID=id PAY_CLIENT_SECRET=secret go run ./example
+//	PAY_BASE_URL=https://api-pay.agent.tech PAY_API_KEY=key PAY_SECRET_KEY=secret go run ./example
 //
 // Set PAY_EMAIL to override the default merchant email (merchant@example.com).
 //
 // To only query an existing intent:
 //
-//	PAY_BASE_URL=... PAY_CLIENT_ID=... PAY_CLIENT_SECRET=... PAY_INTENT_ID=uuid go run ./example
+//	PAY_BASE_URL=... PAY_API_KEY=... PAY_SECRET_KEY=... PAY_INTENT_ID=uuid go run ./example
 package main
 
 import (
@@ -37,16 +37,16 @@ func printJSON(v any) {
 
 func main() {
 	baseURL := os.Getenv("PAY_BASE_URL")
-	clientID := os.Getenv("PAY_CLIENT_ID")
-	clientSecret := os.Getenv("PAY_CLIENT_SECRET")
+	apiKey := os.Getenv("PAY_API_KEY")
+	secretKey := os.Getenv("PAY_SECRET_KEY")
 	intentID := os.Getenv("PAY_INTENT_ID")
 
-	if baseURL == "" || clientID == "" || clientSecret == "" {
-		fmt.Fprintln(os.Stderr, "Set PAY_BASE_URL, PAY_CLIENT_ID, and PAY_CLIENT_SECRET.")
+	if baseURL == "" || apiKey == "" || secretKey == "" {
+		fmt.Fprintln(os.Stderr, "Set PAY_BASE_URL, PAY_API_KEY, and PAY_SECRET_KEY.")
 		os.Exit(1)
 	}
 
-	opts := []pay.OptFn{pay.WithBearerAuth(clientID, clientSecret)}
+	opts := []pay.OptFn{pay.WithBearerAuth(apiKey, secretKey)}
 
 	client, err := pay.NewClient(baseURL, opts...)
 	if err != nil {

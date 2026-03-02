@@ -47,7 +47,7 @@ import (
 func main() {
     client, err := pay.NewClient(
         "https://api-pay.agent.tech",
-        pay.WithBearerAuth("your-client-id", "your-client-secret"),
+        pay.WithBearerAuth("your-api-key", "your-secret-key"),
     )
     if err != nil {
         log.Fatal(err)
@@ -105,8 +105,8 @@ git clone https://github.com/agent-tech/agent-sdk-go
 cd agent-sdk-go
 
 PAY_BASE_URL=https://api-pay.agent.tech \
-PAY_CLIENT_ID=your-client-id \
-PAY_CLIENT_SECRET=your-client-secret \
+PAY_API_KEY=your-api-key \
+PAY_SECRET_KEY=your-secret-key \
 go run ./example
 ```
 
@@ -126,10 +126,10 @@ Both modes use the same `Client` — the prefix is selected automatically based 
 
 ### Bearer token (recommended)
 
-Base64-encodes `clientID:clientSecret` and sends it as `Authorization: Bearer <token>`.
+Base64-encodes `apiKey:secretKey` and sends it as `Authorization: Bearer <token>`.
 
 ```go
-client, err := pay.NewClient(baseURL, pay.WithBearerAuth("client-id", "client-secret"))
+client, err := pay.NewClient(baseURL, pay.WithBearerAuth("api-key", "secret-key"))
 ```
 
 ### Custom HTTP client
@@ -353,7 +353,7 @@ if errors.Is(err, pay.ErrEmptyIntentID) {
 
 ```go
 client, err := pay.NewClient(baseURL,
-    pay.WithBearerAuth(clientID, clientSecret),
+    pay.WithBearerAuth(apiKey, secretKey),
     pay.WithHTTPClient(&http.Client{
         Timeout:   60 * time.Second,
         Transport: &retryTransport{base: http.DefaultTransport},

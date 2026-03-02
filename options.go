@@ -10,14 +10,14 @@ import (
 type OptFn func(*Client)
 
 // WithBearerAuth sets Bearer token authentication using Base64-encoded
-// clientID:clientSecret.
-func WithBearerAuth(clientID, clientSecret string) OptFn {
+// apiKey:secretKey.
+func WithBearerAuth(apiKey, secretKey string) OptFn {
 	return func(c *Client) {
-		if clientID == "" || clientSecret == "" {
+		if apiKey == "" || secretKey == "" {
 			return
 		}
 
-		token := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
+		token := base64.StdEncoding.EncodeToString([]byte(apiKey + ":" + secretKey))
 		c.authFunc = func(req *http.Request) {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
